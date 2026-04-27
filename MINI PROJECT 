@@ -1,0 +1,194 @@
+import os
+# Suppress TensorFlow informational messages and oneDNN warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
+import warnings
+# Suppress Protobuf version warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
+# Suppress Keras warnings (like PyDataset)
+warnings.filterwarnings("ignore", category=UserWarning, module="keras")
+
+import tkinter as tk
+from PIL import Image, ImageTk
+from tkinter import filedialog, messagebox
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from keras import layers, models
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+import matplotlib.pyplot as plt
+from keras.applications import InceptionResNetV2, DenseNet201, ResNet152
+
+def train_val_generators(TRAINING_DIR, TESTING_DIR, VALIDATION_DIR):
+    train_datagen = ImageDataGenerator(
+        rescale=1./255,
+        rotation_range=180,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range = 0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        fill_mode='nearest')
+    train_generator = train_datagen.flow_from_directory(
+        directory=TRAINING_DIR,
+        class_mode='categorical',
+        target_size=(100, 100))
+    test_datagen = ImageDataGenerator(rescale=1./255)
+    test_generator = test_datagen.flow_from_directory(
+        directory=TESTING_DIR,
+        class_mode='categorical',
+        target_size=(100, 100))
+    validation_datagen = ImageDataGenerator(rescale = 1./255)
+    validation_generator = validation_datagen.flow_from_directory(
+        directory=VALIDATION_DIR,
+        class_mode = 'categorical',
+        target_size=(100, 100))
+    return train_generator, test_generator, validation_generator
+
+training = "F:\\New folder (3)\\split_ttv_dataset_type_of_plants\\Train_Set_Folder"
+testing = "F:\\New folder (3)\\split_ttv_dataset_type_of_plants\\Test_Set_Folder"
+validation = "F:\\New folder (3)\\split_ttv_dataset_type_of_plants\\Validation_Set_Folder"
+
+def create_model():
+    model = models.Sequential([
+      layers.Input(shape=(100, 100, 3)),
+      layers.Conv2D(32, (2,2), activation='relu'),
+      layers.MaxPooling2D(2,2),
+      layers.Conv2D(64, (2,2), activation='relu'),
+      layers.MaxPooling2D(2,2),
+      layers.Conv2D(64, (3,3), activation='relu'),
+      layers.MaxPooling2D(2,2),
+        layers.Conv2D(64, (3,3), activation='relu'),
+      layers.MaxPooling2D(2,2),
+      # Flatten the results to feed into a DNN
+      layers.Flatten(),
+      # 512 neuron hidden layer
+        layers.Dropout(0.1),
+      layers.Dense(512, activation='relu'),
+        layers.Dropout(0.1),
+      layers.Dense(30, activation='softmax')
+    ])
+
+    model.compile(optimizer='adam',
+      loss='categorical_crossentropy',
+       metrics=['accuracy'])
+    return model
+
+def get_class_names():
+    # Initialize a fast generator just to extract class indices
+    import sys
+    import io
+    # Suppress output of flow_from_directory to keep console clean during detection
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        train_datagen = ImageDataGenerator(rescale=1./255)
+        train_generator = train_datagen.flow_from_directory(
+            directory=training,
+            class_mode='categorical',
+            target_size=(100, 100))
+        class_indices = train_generator.class_indices
+        class_names = {v: k for k, v in class_indices.items()}
+    finally:
+        sys.stdout = old_stdout
+    return class_names
+
+def train_model():
+    print("\n--- Training Model ---")
+    train_generator, test_generator, validation_generator = train_val_generators(training, testing, validation)
+    model = create_model()
+    model.fit(
+        train_generator,
+        validation_data=validation_generator,
+        epochs=10
+    )
+    model.save("plant_model.h5")
+    print("Model saved successfully as plant_model.h5")
+    print("----------------------\n")
+
+def detect_image():
+    if not os.path.exists("plant_model.h5"):
+        print("\nModel not found! Please train the model first (Option 1).\n")
+        return
+    
+    # Setup Tkinter to hide root window and show dialog
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True) # Bring to front
+    
+    file_path = filedialog.askopenfilename(
+        title="Select an Image",
+        filetypes=[("Image files", "*.jpg *.jpeg *.png"), ("All files", "*.*")]
+    )
+    root.destroy()
+    
+    if not file_path:
+        print("\nNo image selected.\n")
+        return
+        
+    try:
+        print("\nLoading model and predicting...")
+        model = keras.models.load_model("plant_model.h5")
+        
+        # Load and preprocess image
+        img = load_img(file_path, target_size=(100, 100))
+        img_array = img_to_array(img)
+        img_array = np.expand_dims(img_array, axis=0) / 255.0
+        
+        predictions = model.predict(img_array)
+        class_idx = np.argmax(predictions[0])
+        confidence = predictions[0][class_idx]
+        
+        class_names = get_class_names()
+        species = class_names.get(class_idx, "Unknown")
+        
+        print(f"\n========== Detection Result ==========")
+        print(f"Image Path : {file_path}")
+        print(f"Species    : {species}")
+        print(f"Confidence : {confidence*100:.2f}%")
+        print(f"======================================\n")
+        
+    except Exception as e:
+        print(f"\nError during detection: {e}\n")
+
+def show_accuracy():
+    if not os.path.exists("plant_model.h5"):
+        print("\nModel not found! Please train the model first (Option 1).\n")
+        return
+        
+    print("\n--- Calculating Accuracy ---")
+    _, test_generator, _ = train_val_generators(training, testing, validation)
+    
+    model = keras.models.load_model("plant_model.h5")
+    loss, accuracy = model.evaluate(test_generator)
+    
+    print(f"\n========== Accuracy Report ==========")
+    print(f"Test Loss     : {loss:.4f}")
+    print(f"Test Accuracy : {accuracy*100:.2f}%")
+    print(f"=====================================\n")
+
+def main_menu():
+    while True:
+        print("=== Plant Species Detection Menu ===")
+        print("1. Train Model")
+        print("2. Detect Species from Image")
+        print("3. Show Model Accuracy")
+        print("4. Exit")
+        
+        choice = input("Enter your choice (1-4): ")
+        
+        if choice == '1':
+            train_model()
+        elif choice == '2':
+            detect_image()
+        elif choice == '3':
+            show_accuracy()
+        elif choice == '4':
+            print("Exiting...")
+            break
+        else:
+            print("Invalid choice. Please enter a number between 1 and 4.\n")
+
+if __name__ == "__main__":
+    main_menu()
